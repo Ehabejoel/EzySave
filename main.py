@@ -139,62 +139,95 @@ class WebImageDownloader:
         thread.daemon = True
         thread.start()
     
+    def show_error(self, message):
+        """Helper method to show error messages"""
+        messagebox.showerror("Error", message)
+
+    def test_connection(self, url):
+        """Test connection to the given URL"""
+        try:
+            # Try to connect to the host first
+            parsed_url = urlparse(url)
+            test_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            headers = {'User-Agent': random.choice(self.user_agents)}
+            response = requests.head(test_url, headers=headers, timeout=5)
+            return True
+        except:
+            return False
+
     def fetch_images(self):
         try:
             url = self.url_entry.get()
-            if self.use_selenium.get():
-                self.images = self.fetch_with_selenium(url)
+            
+            # Test connection first
+            if not self.test_connection(url):
+                raise ConnectionError("Unable to connect to the website. Please check your internet connection or the URL.")
+            
+            if self.is_valid_image_url(url):
+                self.images = [url]
             else:
-                self.images = self.fetch_with_requests(url)
+                if self.use_selenium.get():
+                    self.images = self.fetch_with_selenium(url)
+                else:
+                    self.images = self.fetch_with_requests(url)
             
             self.root.after(0, self.update_image_list)
+        except ConnectionError as e:
+            error_message = str(e)
+            self.root.after(0, lambda: self.show_error(error_message))
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch images: {str(e)}"))
+            error_message = f"Failed to fetch images: {str(e)}"
+            self.root.after(0, lambda: self.show_error(error_message))
         finally:
             self.root.after(0, self.stop_progress)
-    
+
     def fetch_with_requests(self, url):
-        headers = {
-            'User-Agent': random.choice(self.user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': url,
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        images = []
-        
-        # Find all image tags
-        for img in soup.find_all('img'):
-            img_url = img.get('src')
-            if img_url:
-                # Convert relative URLs to absolute
-                absolute_url = urljoin(url, img_url)
-                if self.is_valid_image_url(absolute_url):
-                    images.append(absolute_url)
-        
-        # Find images in CSS background
-        for tag in soup.find_all(['div', 'span', 'a', 'section']):
-            style = tag.get('style')
-            if style and 'background-image' in style:
-                # Extract URL from background-image: url('...')
-                start = style.find('url(')
-                if start != -1:
-                    start += 4
-                    end = style.find(')', start)
-                    if end != -1:
-                        img_url = style[start:end].strip('\'"')
-                        absolute_url = urljoin(url, img_url)
-                        if self.is_valid_image_url(absolute_url):
-                            images.append(absolute_url)
-        
-        return images
+        try:
+            headers = {
+                'User-Agent': random.choice(self.user_agents),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Referer': url,
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
+            
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            images = []
+            
+            # Find all image tags
+            for img in soup.find_all('img'):
+                img_url = img.get('src')
+                if img_url:
+                    # Convert relative URLs to absolute
+                    absolute_url = urljoin(url, img_url)
+                    if self.is_valid_image_url(absolute_url):
+                        images.append(absolute_url)
+            
+            # Find images in CSS background
+            for tag in soup.find_all(['div', 'span', 'a', 'section']):
+                style = tag.get('style')
+                if style and 'background-image' in style:
+                    # Extract URL from background-image: url('...')
+                    start = style.find('url(')
+                    if start != -1:
+                        start += 4
+                        end = style.find(')', start)
+                        if end != -1:
+                            img_url = style[start:end].strip('\'"')
+                            absolute_url = urljoin(url, img_url)
+                            if self.is_valid_image_url(absolute_url):
+                                images.append(absolute_url)
+            
+            return images
+        except requests.RequestException as e:
+            if "ProxyError" in str(e) or "ConnectionError" in str(e):
+                raise ConnectionError("Unable to connect to the website. Please check your internet connection.")
+            raise
     
     def fetch_with_selenium(self, url):
         chrome_options = Options()
@@ -261,10 +294,11 @@ class WebImageDownloader:
             driver.quit()
     
     def is_valid_image_url(self, url):
-        # Check if the URL points to an image file
+        # Update the function to handle more image formats
         parsed = urlparse(url)
         path = parsed.path.lower()
-        return any(path.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'])
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.ico']
+        return any(path.endswith(ext) for ext in valid_extensions)
     
     def update_image_list(self):
         self.image_listbox.delete(0, tk.END)
@@ -326,34 +360,62 @@ class WebImageDownloader:
                 # Random delay to avoid being blocked
                 time.sleep(random.uniform(0.5, 1.5))
                 
-                # Download with a random user agent
-                headers = {'User-Agent': random.choice(self.user_agents)}
-                response = requests.get(url, headers=headers, timeout=15, stream=True)
-                response.raise_for_status()
-                
-                # Get the image content
-                image_content = response.content
-                
-                # Open the image with PIL
-                img = Image.open(io.BytesIO(image_content))
-                
-                # Get original filename without extension
-                original_filename = os.path.basename(urlparse(url).path)
-                filename_without_ext = os.path.splitext(original_filename)[0]
-                
-                # Create a safe filename
-                safe_filename = ''.join(c for c in filename_without_ext if c.isalnum() or c in '._- ')
-                if not safe_filename:
-                    safe_filename = f"image_{i+1}"
-                
-                # Save with the desired format
-                if img.mode == 'RGBA' and download_format.lower() == 'jpg':
-                    # Convert RGBA to RGB for JPG (JPG doesn't support alpha channel)
-                    rgb_img = Image.new('RGB', img.size, (255, 255, 255))
-                    rgb_img.paste(img, mask=img.split()[3])  # Use alpha channel as mask
-                    save_path = os.path.join(download_path, f"{safe_filename}.jpg")
-                    rgb_img.save(save_path, 'JPEG', quality=95)
+                # Handle SVG files differently
+                if url.lower().endswith('.svg'):
+                    # For SVG files, just save them directly without processing
+                    headers = {'User-Agent': random.choice(self.user_agents)}
+                    response = requests.get(url, headers=headers, timeout=15)
+                    response.raise_for_status()
+                    
+                    # Save SVG file with original format regardless of selected format
+                    original_filename = os.path.basename(urlparse(url).path)
+                    filename_without_ext = os.path.splitext(original_filename)[0]
+                    safe_filename = ''.join(c for c in filename_without_ext if c.isalnum() or c in '._- ')
+                    if not safe_filename:
+                        safe_filename = f"image_{i+1}"
+                    
+                    save_path = os.path.join(download_path, f"{safe_filename}.svg")
+                    with open(save_path, 'wb') as f:
+                        f.write(response.content)
+                    
                 else:
+                    # Handle raster images
+                    headers = {'User-Agent': random.choice(self.user_agents)}
+                    response = requests.get(url, headers=headers, timeout=15, stream=True)
+                    response.raise_for_status()
+                    
+                    # Get the image content
+                    image_content = response.content
+                    
+                    # Open the image with PIL
+                    img = Image.open(io.BytesIO(image_content))
+                    
+                    # Convert image to RGB, handling different modes
+                    if img.mode in ('P', 'PA'):
+                        # Convert palette images to RGBA first if they have transparency
+                        if 'transparency' in img.info:
+                            img = img.convert('RGBA')
+                        else:
+                            img = img.convert('RGB')
+                    
+                    if img.mode == 'RGBA':
+                        # Create a white background for transparent images
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        background.paste(img, mask=img.split()[3])
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Get original filename without extension
+                    original_filename = os.path.basename(urlparse(url).path)
+                    filename_without_ext = os.path.splitext(original_filename)[0]
+                    
+                    # Create a safe filename
+                    safe_filename = ''.join(c for c in filename_without_ext if c.isalnum() or c in '._- ')
+                    if not safe_filename:
+                        safe_filename = f"image_{i+1}"
+                    
+                    # Save with the desired format
                     save_path = os.path.join(download_path, f"{safe_filename}.{download_format}")
                     img.save(save_path, quality=95 if download_format.lower() == 'jpg' else None)
                 
